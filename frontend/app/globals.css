@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/*
+ * The agreement is a document, not part of the interface: it stays on white
+ * paper with serif type in either colour scheme, because that is what gets
+ * printed and signed.
+ */
+.document {
+  font-family: Georgia, "Times New Roman", Times, serif;
+  font-size: 0.9375rem;
+}
+
+@media print {
+  @page {
+    margin: 18mm;
+  }
+
+  /* Only the document prints; the form is hidden by a `print:hidden` utility. */
+  html,
+  body {
+    background: #fff;
+  }
+
+  /* The Standard Terms begin on their own page, as in the published agreement. */
+  .document-break {
+    break-after: page;
+    height: 0;
+    margin: 0;
+    border: 0;
+  }
+
+  .document table,
+  .document tr,
+  .document td,
+  .document th {
+    break-inside: avoid;
+  }
+
+  .document p,
+  .document li {
+    orphans: 3;
+    widows: 3;
+  }
+}
