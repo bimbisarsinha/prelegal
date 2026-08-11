@@ -25,10 +25,36 @@ const CHECK_ITEM = /^- \[([ x])\] +(.*)$/;
 const ORDERED_ITEM = /^\d+\. +(.*)$/;
 const BREAK = /^-{3,}$/;
 
+/**
+ * Split a table row into cells, honouring the two escapes `tableCell` emits.
+ *
+ * `\|` is a literal pipe within a cell — how user text carrying a pipe reaches
+ * the table without shifting the columns — and `\\` a literal backslash, which
+ * must be consumed as a unit so that a trailing backslash cannot escape the
+ * delimiter that follows it.
+ */
 function splitRow(line: string): string[] {
-  const cells = line.split("|");
+  const cells: string[] = [];
+  let cell = "";
+
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    const next = line[index + 1];
+
+    if (character === "\\" && (next === "|" || next === "\\")) {
+      cell += next;
+      index += 1;
+    } else if (character === "|") {
+      cells.push(cell);
+      cell = "";
+    } else {
+      cell += character;
+    }
+  }
+  cells.push(cell);
+
   // A well-formed row has empty strings either side of the outer pipes.
-  return cells.slice(1, -1).map((cell) => cell.trim());
+  return cells.slice(1, -1).map((value) => value.trim());
 }
 
 const isSeparatorRow = (cells: string[]) => cells.every((cell) => /^:?-{3,}:?$/.test(cell));

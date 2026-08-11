@@ -29,30 +29,71 @@ import {
   type Party,
 } from "./fields";
 
+const DRIFT_ADVICE =
+  "The template under templates/ has changed in a way this renderer does not understand.";
+
 export class TemplateAnchorError extends Error {
   constructor(description: string, found: number) {
     super(
-      `Template anchor "${description}" matched ${found} times, expected exactly 1. ` +
-        `The template under templates/ has changed in a way this renderer does not understand.`,
+      `Template anchor "${description}" matched ${found} times, expected exactly 1. ${DRIFT_ADVICE}`,
     );
     this.name = "TemplateAnchorError";
   }
 }
 
-function replaceOnce(
-  text: string,
-  pattern: RegExp,
-  replacement: string,
-  description: string,
-): string {
-  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
-  const matches = text.match(new RegExp(pattern.source, flags));
-  if (matches?.length !== 1) {
-    throw new TemplateAnchorError(description, matches?.length ?? 0);
+/** Two anchors have grown into each other, so neither one can be trusted. */
+export class TemplateOverlapError extends Error {
+  constructor(description: string) {
+    super(`Template anchor "${description}" overlaps another anchor. ${DRIFT_ADVICE}`);
+    this.name = "TemplateOverlapError";
   }
-  // `replacement` is user text; `$` sequences in it must not be read as
-  // backreferences, so the function form is used rather than the string form.
-  return text.replace(pattern, () => replacement);
+}
+
+interface Substitution {
+  /** Matches the template text being replaced, exactly once. */
+  pattern: RegExp;
+  /** The user's answer, inserted verbatim. */
+  replacement: string;
+  /** Named in the error when the anchor no longer matches exactly once. */
+  description: string;
+}
+
+/**
+ * Apply every substitution to the template in a single pass.
+ *
+ * Each anchor is located in the *original* template and never in a partly filled
+ * one, which is what keeps user text out of the matching. A sequential pass
+ * cannot do this: the Purpose is substituted first, so a purpose reading
+ * "a deal governed by [Fill in state] law" would give the Governing Law anchor a
+ * second match and throw — taking down a page whose only fault was quoting the
+ * form back at it. The same held for modifications naming a signature row.
+ *
+ * User text is spliced, never used as a `replace` argument, so `$&` and friends
+ * in it cannot be read as backreferences.
+ */
+function substitute(template: string, substitutions: Substitution[]): string {
+  const edits = substitutions.map(({ pattern, replacement, description }) => {
+    const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+    const matches = [...template.matchAll(new RegExp(pattern.source, flags))];
+    if (matches.length !== 1) {
+      throw new TemplateAnchorError(description, matches.length);
+    }
+    const [match] = matches;
+    return { start: match.index, end: match.index + match[0].length, replacement, description };
+  });
+
+  edits.sort((left, right) => left.start - right.start);
+
+  let out = "";
+  let cursor = 0;
+  for (const edit of edits) {
+    if (edit.start < cursor) {
+      throw new TemplateOverlapError(edit.description);
+    }
+    out += template.slice(cursor, edit.start) + edit.replacement;
+    cursor = edit.end;
+  }
+  return out + template.slice(cursor);
 }
 
 function checkbox(selected: boolean): string {
@@ -60,116 +101,130 @@ function checkbox(selected: boolean): string {
 }
 
 function fillCoverPage(template: string, fields: NdaFields): string {
-  let out = template;
-
-  out = replaceOnce(
-    out,
-    /\[Evaluating whether to enter into a business relationship with the other party\.\]/,
-    orBlank(fields.purpose),
-    "Purpose",
-  );
-
-  out = replaceOnce(
-    out,
-    /\[Today[^\]]*date\]/,
-    formatDate(fields.effectiveDate) || BLANK,
-    "Effective Date",
-  );
-
   const byYears = fields.mndaTerm === "years";
-  out = replaceOnce(
-    out,
-    /^- \[[ x]\] +Expires \[[^\]]*\] from Effective Date\.$/m,
-    `${checkbox(byYears)}     Expires ${
-      byYears ? formatYears(fields.mndaTermYears) : BLANK
-    } from Effective Date.`,
-    "MNDA Term (fixed years)",
-  );
-  out = replaceOnce(
-    out,
-    /^- \[[ x]\] +Continues until terminated.*$/m,
-    `${checkbox(
-      !byYears,
-    )}     Continues until terminated in accordance with the terms of the MNDA.`,
-    "MNDA Term (until terminated)",
-  );
-
   const confByYears = fields.confidentialityTerm === "years";
-  out = replaceOnce(
-    out,
-    /^- \[[ x]\] +\[[^\]]*\] from Effective Date, but in the case of trade secrets.*$/m,
-    `${checkbox(confByYears)}     ${
-      confByYears ? formatYears(fields.confidentialityYears) : BLANK
-    } from Effective Date, but in the case of trade secrets until Confidential Information ` +
-      `is no longer considered a trade secret under applicable laws.`,
-    "Term of Confidentiality (fixed years)",
-  );
-  out = replaceOnce(
-    out,
-    /^- \[[ x]\] +In perpetuity\.$/m,
-    `${checkbox(!confByYears)}     In perpetuity.`,
-    "Term of Confidentiality (perpetual)",
-  );
 
-  out = replaceOnce(out, /\[Fill in state\]/, orBlank(fields.governingLaw), "Governing Law");
-  out = replaceOnce(
-    out,
-    /\[Fill in city or county and state[^\]]*\]/,
-    orBlank(fields.jurisdiction),
-    "Jurisdiction",
-  );
-
-  out = replaceOnce(
-    out,
-    /^List any modifications to the MNDA$/m,
-    fields.modifications.trim() || "None.",
-    "MNDA Modifications",
-  );
-
-  return fillPartyTable(out, fields.party1, fields.party2);
+  return substitute(template, [
+    {
+      description: "Purpose",
+      pattern: /\[Evaluating whether to enter into a business relationship with the other party\.\]/,
+      replacement: orBlank(fields.purpose),
+    },
+    {
+      description: "Effective Date",
+      pattern: /\[Today[^\]]*date\]/,
+      replacement: formatDate(fields.effectiveDate) || BLANK,
+    },
+    {
+      description: "MNDA Term (fixed years)",
+      pattern: /^- \[[ x]\] +Expires \[[^\]]*\] from Effective Date\.$/m,
+      replacement: `${checkbox(byYears)}     Expires ${
+        byYears ? formatYears(fields.mndaTermYears) : BLANK
+      } from Effective Date.`,
+    },
+    {
+      description: "MNDA Term (until terminated)",
+      pattern: /^- \[[ x]\] +Continues until terminated.*$/m,
+      replacement: `${checkbox(
+        !byYears,
+      )}     Continues until terminated in accordance with the terms of the MNDA.`,
+    },
+    {
+      description: "Term of Confidentiality (fixed years)",
+      pattern: /^- \[[ x]\] +\[[^\]]*\] from Effective Date, but in the case of trade secrets.*$/m,
+      replacement:
+        `${checkbox(confByYears)}     ${
+          confByYears ? formatYears(fields.confidentialityYears) : BLANK
+        } from Effective Date, but in the case of trade secrets until Confidential Information ` +
+        `is no longer considered a trade secret under applicable laws.`,
+    },
+    {
+      description: "Term of Confidentiality (perpetual)",
+      pattern: /^- \[[ x]\] +In perpetuity\.$/m,
+      replacement: `${checkbox(!confByYears)}     In perpetuity.`,
+    },
+    {
+      description: "Governing Law",
+      pattern: /\[Fill in state\]/,
+      replacement: orBlank(fields.governingLaw),
+    },
+    {
+      description: "Jurisdiction",
+      pattern: /\[Fill in city or county and state[^\]]*\]/,
+      replacement: orBlank(fields.jurisdiction),
+    },
+    {
+      description: "MNDA Modifications",
+      pattern: /^List any modifications to the MNDA$/m,
+      replacement: fields.modifications.trim() || "None.",
+    },
+    ...partyTableSubstitutions(fields.party1, fields.party2),
+  ]);
 }
 
 /**
- * Fill the signature block.
+ * Fit a party's answer into one table cell.
  *
- * Signature and Date rows are left untouched — they are signed by hand. The
- * upstream template's `| Print Name | |` row is short a cell; rewriting whole
- * rows repairs that on the way out.
+ * A Markdown table row is a single line, and `|` ends a cell. Party details come
+ * from free-text inputs — a postal address is naturally typed over several lines,
+ * and a company name may legitimately contain a pipe — so newlines are folded
+ * into the line and pipes are escaped. Left alone, a pasted address splits the
+ * row in two and a stray pipe shifts every cell after it one column right.
+ *
+ * Backslashes are escaped before pipes, and in that order. `A\|B` must reach the
+ * file as `A\\\|B` — an escaped backslash then an escaped pipe. Escaping only the
+ * pipe would emit `A\\|B`, which every other Markdown reader takes as an escaped
+ * backslash followed by a live cell delimiter, so the downloaded file would shift
+ * its columns while the preview did not.
  */
-function fillPartyTable(template: string, party1: Party, party2: Party): string {
+function tableCell(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(", ")
+    .replace(/\\/g, "\\\\")
+    .replace(/\|/g, "\\|");
+}
+
+/**
+ * The signature block.
+ *
+ * Signature and Date rows are absent — they are signed by hand. The upstream
+ * template's `| Print Name | |` row is short a cell; rewriting whole rows repairs
+ * that on the way out.
+ */
+function partyTableSubstitutions(party1: Party, party2: Party): Substitution[] {
   const row = (label: string, value: (party: Party) => string) =>
-    `| ${label} | ${orBlank(value(party1))} | ${orBlank(value(party2))} |`;
+    `| ${label} | ${orBlank(tableCell(value(party1)))} | ${orBlank(tableCell(value(party2)))} |`;
 
-  let out = replaceOnce(
-    template,
-    /^\| Print Name \|.*$/m,
-    row("Print Name", (p) => p.printName),
-    "Print Name row",
-  );
-  out = replaceOnce(
-    out,
-    /^\| Title \|.*$/m,
-    // Title is optional: not every signatory has one, and the template does not
-    // insist. An empty cell is preferable to a blank line implying an omission.
-    `| Title | ${party1.title.trim()} | ${party2.title.trim()} |`,
-    "Title row",
-  );
-  out = replaceOnce(
-    out,
-    /^\| Company \|.*$/m,
-    row("Company", (p) => p.company),
-    "Company row",
-  );
-  out = replaceOnce(
-    out,
-    /^\| Notice Address(<label>.*?<\/label>| )*\|.*$/m,
-    `| Notice Address <label>Use either email or postal address</label> | ${orBlank(
-      party1.noticeAddress,
-    )} | ${orBlank(party2.noticeAddress)} |`,
-    "Notice Address row",
-  );
-
-  return out;
+  return [
+    {
+      description: "Print Name row",
+      pattern: /^\| Print Name \|.*$/m,
+      replacement: row("Print Name", (p) => p.printName),
+    },
+    {
+      description: "Title row",
+      pattern: /^\| Title \|.*$/m,
+      // Title is optional: not every signatory has one, and the template does not
+      // insist. An empty cell is preferable to a blank line implying an omission.
+      replacement: `| Title | ${tableCell(party1.title)} | ${tableCell(party2.title)} |`,
+    },
+    {
+      description: "Company row",
+      pattern: /^\| Company \|.*$/m,
+      replacement: row("Company", (p) => p.company),
+    },
+    {
+      description: "Notice Address row",
+      pattern: /^\| Notice Address(<label>.*?<\/label>| )*\|.*$/m,
+      replacement:
+        `| Notice Address <label>Use either email or postal address</label> ` +
+        `| ${orBlank(tableCell(party1.noticeAddress))} ` +
+        `| ${orBlank(tableCell(party2.noticeAddress))} |`,
+    },
+  ];
 }
 
 /**

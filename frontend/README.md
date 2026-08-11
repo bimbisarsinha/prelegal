@@ -10,10 +10,15 @@ Implements [PL-3](https://kalyan-jira.atlassian.net/browse/PL-3).
 
 ```bash
 npm install
-npm run dev      # http://localhost:3000
-npm run build    # production build
+npm run dev        # http://localhost:3000
+npm run build      # production build
+npm test           # 290 unit and integration tests
+npm run typecheck
 npm run lint
 ```
+
+See [TESTING.md](TESTING.md) for what the suite covers and for the manual plan — the PDF
+comes out of the browser's own print engine, so a person has to look at it.
 
 ## How it works
 
@@ -55,8 +60,9 @@ once at build time to force that check.
 - **PDF** — the print stylesheet hides the interface so the browser's own *Save as PDF*
   produces the document. No PDF library, so nothing to keep patched.
 
-Downloads stay disabled until every required field is filled: a half-completed NDA is worse
-than none. Signature and Date are intentionally left blank for the parties to sign.
+Both are refused until every required field is filled — the attempt is what surfaces the list
+of what is missing — because a half-completed NDA is worse than none. Signature and Date are
+intentionally left blank for the parties to sign.
 
 ## Licence
 
