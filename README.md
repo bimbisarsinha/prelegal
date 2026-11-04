@@ -2,6 +2,17 @@
 
 A platform for drafting common legal agreements.
 
+## Status
+
+**Work in progress.** Prelegal is under active development. Features, APIs and documentation may change, and parts of this README may be out of date.
+
+Done so far:
+- AI chat to draft all 11 document types in `catalog.json`, with live preview and PDF download
+- User sign up / sign in and saving documents to your account
+
+Still to do:
+- Bring this README up to date (see issue #1)
+
 This is the result of me (Ed) running the Jira tickets through Claude Code. But you should do this yourself!
 
 See the skill in the .claude directory.
